@@ -25,9 +25,10 @@ jobs:
           ctx.check_hostname = False
           ctx.verify_mode = ssl.CERT_NONE
           url = '${{ github.event.client_payload.audio_url }}'
-          req = urllib.request.urlopen(url, context=ctx)
-          with open('audio.mp3', 'wb') as f:
-              f.write(req.read())
+          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+          req = urllib.request.Request(url, headers=headers)
+          with urllib.request.urlopen(req, context=ctx) as response, open('audio.mp3', 'wb') as f:
+              f.write(response.read())
           "
 
       - name: Cut Minecraft clip (cached full video, then trim locally)
@@ -128,5 +129,3 @@ jobs:
           curl -X POST "${{ github.event.client_payload.callback_url }}" \
             -H "Content-Type: application/json" \
             -d "{\"status\":\"$STATUS\",\"reddit_id\":\"${{ github.event.client_payload.reddit_id }}\",\"youtube_id\":\"$YT_ID\",\"clip_start\":${{ github.event.client_payload.start_time }},\"clip_end\":$((${{ github.event.client_payload.start_time }} + ${{ github.event.client_payload.duration }}))}"
-
-    
