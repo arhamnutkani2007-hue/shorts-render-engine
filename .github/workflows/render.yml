@@ -7,9 +7,45 @@ on:
 jobs:
   render:
     runs-on: ubuntu-latest
+    env:
+      AUDIO_URL: ${{ github.event.client_payload.audio_url }}
+      VIDEO_URL: ${{ github.event.client_payload.video_url }}
+      START_TIME: ${{ github.event.client_payload.start_time }}
+      DURATION: ${{ github.event.client_payload.duration }}
+      CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
+      REDDIT_ID: ${{ github.event.client_payload.reddit_id }}
+      VIDEO_TITLE: ${{ github.event.client_payload.title }}
+      VIDEO_DESCRIPTION: ${{ github.event.client_payload.description }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Validate inputs from n8n
+        run: |
+          echo "Checking client_payload fields sent by n8n..."
+          MISSING=0
+
+          check() {
+            local name="$1"
+            local value="$2"
+            if [ -z "$value" ]; then
+              echo "::error::Missing/empty client_payload.$name — check the n8n 'Trigger GitHub Action' node body."
+              MISSING=1
+            else
+              echo "OK: $name is present"
+            fi
+          }
+
+          check "audio_url" "$AUDIO_URL"
+          check "video_url" "$VIDEO_URL"
+          check "start_time" "$START_TIME"
+          check "duration" "$DURATION"
+          check "callback_url" "$CALLBACK_URL"
+
+          if [ "$MISSING" = "1" ]; then
+            echo "::error::One or more required fields from n8n are empty. Fix the n8n trigger node payload and re-run. Stopping now instead of failing deep inside the job."
+            exit 1
+          fi
 
       - name: Install FFmpeg & Python deps
         run: |
@@ -20,23 +56,27 @@ jobs:
       - name: Download voice audio
         run: |
           python3 -c "
-          import urllib.request, ssl
+          import urllib.request, ssl, os, sys
+          url = os.environ.get('AUDIO_URL', '')
+          if not url:
+              print('AUDIO_URL is empty - cannot download audio', file=sys.stderr)
+              sys.exit(1)
           ctx = ssl.create_default_context()
           ctx.check_hostname = False
           ctx.verify_mode = ssl.CERT_NONE
-          url = '${{ github.event.client_payload.audio_url }}'
           headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
           req = urllib.request.Request(url, headers=headers)
           with urllib.request.urlopen(req, context=ctx) as response, open('audio.mp3', 'wb') as f:
               f.write(response.read())
+          print('Downloaded audio.mp3 successfully')
           "
 
       - name: Cut Minecraft clip (cached full video, then trim locally)
         run: |
-          curl -L "${{ github.event.client_payload.video_url }}" -o source.mp4
-          ffmpeg -ss ${{ github.event.client_payload.start_time }} \
+          curl -L "$VIDEO_URL" -o source.mp4
+          ffmpeg -ss "$START_TIME" \
                  -i source.mp4 \
-                 -t ${{ github.event.client_payload.duration }} \
+                 -t "$DURATION" \
                  -c:v libx264 -preset veryfast -c:a copy raw_clip.mp4
           rm source.mp4
 
@@ -82,8 +122,6 @@ jobs:
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
-          VIDEO_TITLE: ${{ github.event.client_payload.title }}
-          VIDEO_DESCRIPTION: ${{ github.event.client_payload.description }}
         run: |
           cat > upload_youtube.py << 'EOF'
           import os, json
@@ -102,8 +140,8 @@ jobs:
 
           body = {
               "snippet": {
-                  "title": os.environ["VIDEO_TITLE"],
-                  "description": os.environ["VIDEO_DESCRIPTION"],
+                  "title": os.environ.get("VIDEO_TITLE", "Untitled"),
+                  "description": os.environ.get("VIDEO_DESCRIPTION", ""),
                   "categoryId": "24",
               },
               "status": {"privacyStatus": "private"},
@@ -126,6 +164,22 @@ jobs:
             STATUS="success"
             YT_ID=$(jq -r '.youtube_id' youtube_result.json)
           fi
-          curl -X POST "${{ github.event.client_payload.callback_url }}" \
+
+          # Safe defaults so arithmetic / JSON never breaks even if inputs were missing
+          SAFE_START="${START_TIME:-0}"
+          SAFE_DURATION="${DURATION:-0}"
+          CLIP_END=$(( SAFE_START + SAFE_DURATION ))
+
+          PAYLOAD=$(jq -n \
+            --arg status "$STATUS" \
+            --arg reddit_id "$REDDIT_ID" \
+            --arg youtube_id "$YT_ID" \
+            --argjson clip_start "$SAFE_START" \
+            --argjson clip_end "$CLIP_END" \
+            '{status: $status, reddit_id: $reddit_id, youtube_id: $youtube_id, clip_start: $clip_start, clip_end: $clip_end}')
+
+          echo "Sending callback payload: $PAYLOAD"
+
+          curl -X POST "$CALLBACK_URL" \
             -H "Content-Type: application/json" \
-            -d "{\"status\":\"$STATUS\",\"reddit_id\":\"${{ github.event.client_payload.reddit_id }}\",\"youtube_id\":\"$YT_ID\",\"clip_start\":${{ github.event.client_payload.start_time }},\"clip_end\":$((${{ github.event.client_payload.start_time }} + ${{ github.event.client_payload.duration }}))}"
+            -d "$PAYLOAD"
