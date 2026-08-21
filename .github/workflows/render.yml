@@ -87,11 +87,31 @@ jobs:
             exit 1
           fi
 
+          # Get the real duration of the source video so we can catch an out-of-range start_time
+          # BEFORE ffmpeg silently produces an empty clip.
+          VIDEO_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 source.mp4)
+          VIDEO_DURATION_INT=${VIDEO_DURATION%.*}
+          echo "Source video duration: ${VIDEO_DURATION_INT}s | requested start_time=${START_TIME}s duration=${DURATION}s"
+
+          if [ -z "$VIDEO_DURATION_INT" ] || [ "$START_TIME" -ge "$VIDEO_DURATION_INT" ]; then
+            echo "::error::start_time ($START_TIME s) is beyond the source video's actual length (${VIDEO_DURATION_INT}s)."
+            echo "::error::Fix the 'Pick Random Start Point (No Repeats)' node in n8n - its max range must match this video's real duration (${VIDEO_DURATION_INT}s), not the old video's length."
+            exit 1
+          fi
+
           ffmpeg -ss "$START_TIME" \
                  -i source.mp4 \
                  -t "$DURATION" \
                  -c:v libx264 -preset veryfast -c:a copy raw_clip.mp4
           rm source.mp4
+
+          # Confirm the cut actually produced a real video stream (catches silent empty-clip cases)
+          CLIP_DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 raw_clip.mp4 2>/dev/null || echo "")
+          echo "raw_clip.mp4 duration: ${CLIP_DURATION}s"
+          if [ -z "$CLIP_DURATION" ]; then
+            echo "::error::raw_clip.mp4 has no readable duration/streams - the cut produced an empty file."
+            exit 1
+          fi
 
       - name: Build word-synced subtitle file (.ass) from AssemblyAI words JSON
         run: |
