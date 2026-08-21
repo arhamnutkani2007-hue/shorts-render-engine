@@ -77,6 +77,16 @@ jobs:
       - name: Cut Minecraft clip (cached full video, then trim locally)
         run: |
           curl -L "$VIDEO_URL" -o source.mp4
+
+          # Sanity check: a real Minecraft clip source should be at least a few MB.
+          SIZE=$(stat -c%s source.mp4 2>/dev/null || echo 0)
+          echo "Downloaded source.mp4 size: $SIZE bytes"
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::source.mp4 is only $SIZE bytes - download likely failed. Check VIDEO_URL points to a valid GitHub Release asset."
+            head -c 500 source.mp4
+            exit 1
+          fi
+
           ffmpeg -ss "$START_TIME" \
                  -i source.mp4 \
                  -t "$DURATION" \
